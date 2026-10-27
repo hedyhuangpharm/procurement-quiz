@@ -147,6 +147,16 @@ table.score td:not(:first-child),table.score th:not(:first-child){text-align:rig
 .explain{border-left:3px solid var(--accent);padding:4px 0 4px 14px;display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
 .verdict{font-weight:700}
 .verdict.ok{color:var(--ok)} .verdict.bad{color:var(--bad)}
+.exbox{display:flex;flex-direction:column;gap:10px}
+.exbox:empty{display:none}
+.exhead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.exthread{display:flex;flex-direction:column;gap:10px}
+.exa,.exlive{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-size:.92rem;line-height:1.75}
+.exa p,.exlive p{margin:0 0 6px}.exa p:last-child,.exlive p:last-child{margin:0}
+.exa ul,.exlive ul{margin:0 0 6px;padding-left:1.2em}
+.exq{align-self:flex-end;max-width:85%;background:var(--accent-soft);color:var(--ink);border-radius:8px;padding:6px 12px;font-size:.9rem}
+.excopy{min-height:120px}
+.exctl input{font-size:.9rem}
 .star{border:none;background:none;font-size:1.25rem;line-height:1;color:var(--muted);padding:2px 4px}
 .star[aria-pressed="true"]{color:var(--warn)}
 .result-big{font-family:var(--display);font-size:2.6rem;font-weight:900;line-height:1.1}
@@ -593,7 +603,7 @@ function render(){
     <p class="qtext">${esc(q.q)}</p>
     <div class="opts ${tf?"tf":""}">${q.o.map((o,k)=>{let c="";if(shown){if(k===q.a)c="right";else if(k===picked)c="wrong"}else if(k===picked)c="picked";
       return `<button class="opt ${c}" data-k="${k}" ${shown?"disabled":""}><span class="k">${keyLabel(q,k)}</span><span>${esc(o)}</span></button>`}).join("")}</div>
-    ${shown?`<div class="explain"><span class="verdict ${picked===q.a?"ok":"bad"}" id="verdict">${picked===q.a?"答對了":"答錯了，正確答案是 "+ansText(q)}</span>${q.src?`<span class="tag">依據法源：${esc(q.src)}</span>`:""}</div>`:""}
+    ${shown?`<div class="explain"><span class="verdict ${picked===q.a?"ok":"bad"}" id="verdict">${picked===q.a?"答對了":"答錯了，正確答案是 "+ansText(q)}</span>${q.src?`<span class="tag">依據法源：${esc(q.src)}</span>`:""}</div><div class="exbox" id="exbox"></div>`:""}
   </article>
   <div class="row">
     <button class="btn" id="prev" ${i===0?"disabled":""}>上一題</button>
@@ -606,6 +616,7 @@ function render(){
   <p class="note">鍵盤：${tf?`<span class="kbd">O</span> / <span class="kbd">X</span>`:`<span class="kbd">1</span>–<span class="kbd">4</span>`} 作答，<span class="kbd">Enter</span> 下一題，<span class="kbd">←</span> 上一題</p>
   </div>`;
   app.querySelectorAll(".opt").forEach(b=>b.onclick=()=>pick(+b.dataset.k));
+  if(document.getElementById("exbox"))fillEx(q);
   document.getElementById("star").onclick=()=>{S.star=starred?S.star.filter(x=>x!==q.id):S.star.concat(q.id);save();render()};
   document.getElementById("prev").onclick=()=>{if(run.i>0){run.i--;render()}};
   document.getElementById("next").onclick=next;
@@ -718,6 +729,94 @@ function results(){
   const m=document.getElementById("more");if(m)m.onclick=()=>{sq.lim+=30;results()};
 }
 
+/* ---------- 詳解：請 Claude 產生／複製題目 ---------- */
+const EKEY="pq-ex";
+let EX={};try{EX=JSON.parse(lsGet(EKEY)||"{}")}catch(e){}
+const saveEx=()=>lsSet(EKEY,JSON.stringify(EX));
+let SAMPLE=null,sampleOff=false,exCtl=null;
+try{if(window.claude&&claude.use)claude.use("sample").then(s=>{SAMPLE=s;const q=curQ();if(q&&document.getElementById("exbox"))fillEx(q)}).catch(()=>{})}catch(e){}
+const curQ=()=>run&&run.qs?run.qs[run.i]:null;
+function exPrompt(q){
+  const opts=q.t==="mc"?q.o.map((o,k)=>`(${k+1}) ${o}`).join("\n"):"";
+  return `你是政府採購法考試的解題老師。請為下面這題寫詳解，給準備「採購專業人員基礎訓練」考試的學員使用。
+
+【章節】${CH[q.ci].name}
+【題型】${TN[q.t]}
+【題目】${q.q}
+${opts?opts+"\n":""}【題庫答案】${q.t==="mc"?`(${q.a+1}) ${q.o[q.a]}`:TF_KEYS[q.a]+"（"+TF_OPTS[q.a]+"）"}
+${q.src?`【題庫標示的依據法源】政府採購法${q.src}\n`:""}
+寫作要求：
+1. 標明出處到「法規名稱＋條＋項＋款」，例如：政府採購法第22條第1項第9款、政府採購法施行細則第○條、招標期限標準第○條、投標廠商資格與特殊或巨額採購認定標準第○條、押標金保證金暨其他擔保作業辦法第○條、最有利標評選辦法第○條。屬於工程會函釋、採購錯誤行為態樣、契約範本或執行注意事項者，寫明來源類型與名稱。
+2. ${q.t==="mc"?"逐一說明 (1)～(4) 每個選項對或錯、錯在哪裡，以及正確的規定與出處。":"說明為什麼是"+TF_KEYS[q.a]+"；如果是 X，寫出正確的敘述與出處。"}
+3. 引用時寫出條文的關鍵內容（數字、期限、主體）。條號或項款沒有把握時，寫「（條號請查證）」，不要猜。
+4. 如果依現行法規判斷，正確答案和題庫答案不同，第一行寫「⚠ 疑義：」並說明原因（例如法規已修正）。
+5. 繁體中文、台灣用語，400 字以內，依照這個格式：
+**出處**：……
+**解析**：……
+${q.t==="mc"?"**各選項**：\n- (1) ……\n- (2) ……\n- (3) ……\n- (4) ……\n":""}**記憶重點**：一句話`;
+}
+function md(t){
+  return esc(t).replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").split(/\n/).map(l=>/^\s*[-•]\s+/.test(l)?`<li>${l.replace(/^\s*[-•]\s+/,"")}</li>`:l.trim()?`<p>${l}</p>`:"").join("").replace(/(<li>.*?<\/li>)+/g,m=>`<ul>${m}</ul>`);
+}
+function exErr(e){const c=e&&e.code;
+  if(["not_granted","sampling_disabled","not_declared","capability_disabled","capability_removed"].includes(c)){sampleOff=true;return "這個頁面目前無法呼叫 Claude，可以改用「複製題目問 Claude」。"}
+  if(c==="rate_limited")return "Claude 使用次數暫時達到上限，請稍後再試。";
+  if(c==="session_expired")return "Claude 登入已過期，請重新登入後再試。";
+  if(c==="refused")return "Claude 沒有回答這題，可以改用「複製題目問 Claude」。";
+  return "產生詳解時連線中斷，請再按一次。";
+}
+function fillEx(q){
+  const box=document.getElementById("exbox");if(!box)return;
+  const saved=EX[q.id],can=SAMPLE&&!sampleOff;
+  const msgs=saved?saved.m:[];
+  box.innerHTML=`
+    ${msgs.length?`<div class="exhead"><span class="label">詳解</span><span class="note">由 Claude 產生，引用條號請對照法規查證</span></div>
+      <div class="exthread">${msgs.map(m=>m.r==="a"?`<div class="exa">${md(m.t)}</div>`:`<div class="exq">${esc(m.t)}</div>`).join("")}</div>`:""}
+    <div class="exlive" id="exlive" hidden></div>
+    <div class="row exctl">
+      ${can&&!msgs.length?`<button class="btn primary sm" id="exAsk">請 Claude 詳解</button>`:""}
+      ${can&&msgs.length?`<input type="text" id="exFollow" placeholder="還有疑問？例如：未達公告金額也適用嗎" aria-label="追問" style="flex:1;min-width:180px"><button class="btn sm" id="exSend">追問</button>`:""}
+      <button class="btn ghost sm" id="exStop" hidden>停止</button>
+      <button class="btn ghost sm" id="exCopy">複製題目問 Claude</button>
+      ${msgs.length?`<button class="btn ghost sm" id="exDel">刪除詳解</button>`:""}
+    </div>
+    <span class="msg note" id="exMsg" role="status"></span>`;
+  const msg=document.getElementById("exMsg"),live=document.getElementById("exlive"),stop=document.getElementById("exStop");
+  document.getElementById("exCopy").onclick=()=>{const t=exPrompt(q)+(msgs.length?"":"");
+    navigator.clipboard.writeText(t).then(()=>{msg.className="msg ok";msg.innerHTML='已複製，請到 Claude 貼上送出。<a href="https://claude.ai/new" target="_blank" rel="noopener">開啟 Claude</a>'})
+      .catch(()=>{box.insertAdjacentHTML("beforeend",`<textarea class="excopy" readonly aria-label="題目內容">${esc(t)}</textarea>`);const ta=box.querySelector(".excopy");ta.select();msg.className="msg note";msg.textContent="請長按或按 Ctrl+C 複製上面的文字，再到 Claude 貼上"})};
+  const del=document.getElementById("exDel");
+  if(del)del.onclick=()=>{if(!del.dataset.armed){del.dataset.armed=1;del.textContent="再按一次刪除";return}delete EX[q.id];saveEx();fillEx(q)};
+  const ask=async(turns,onDone)=>{
+    exCtl=new AbortController();live.hidden=false;live.innerHTML='<p class="note">Claude 正在整理詳解…</p>';stop.hidden=false;msg.textContent="";
+    box.querySelectorAll("#exAsk,#exSend").forEach(b=>b.disabled=true);
+    stop.onclick=()=>exCtl&&exCtl.abort();
+    try{const {text,truncated}=await SAMPLE(turns,{signal:exCtl.signal,cache:false,onText:({text})=>{live.innerHTML=md(text)}});
+      onDone(text);saveEx();if(curQ()===q)fillEx(q);
+      if(truncated){const m=document.getElementById("exMsg");if(m)m.textContent="回答太長被截斷，可以追問剩下的部分"}}
+    catch(e){if(curQ()!==q)return;
+      if(e&&e.code==="cancelled"){fillEx(q);return}
+      const t=exErr(e);fillEx(q);const m=document.getElementById("exMsg");if(m){m.className="msg bad";m.textContent=t}}
+  };
+  const a=document.getElementById("exAsk");
+  if(a)a.onclick=()=>ask(exPrompt(q),text=>{EX[q.id]={m:[{r:"a",t:text}],at:Date.now()}});
+  const send=document.getElementById("exSend"),fu=document.getElementById("exFollow");
+  if(send){const go=()=>{const v=fu.value.trim();if(!v)return;
+      const turns=[{role:"user",content:exPrompt(q)}];msgs.forEach(m=>turns.push({role:m.r==="a"?"assistant":"user",content:m.t}));
+      turns.push({role:"user",content:v+"\n（請延續上面的詳解回答，同樣標明出處，沒把握的條號寫「請查證」，300 字以內。）"});
+      while(turns.length>12)turns.splice(1,2);
+      ask(turns,text=>{EX[q.id].m.push({r:"u",t:v},{r:"a",t:text});EX[q.id].at=Date.now()})};
+    send.onclick=go;fu.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();e.stopPropagation();go()}}}
+}
+async function saveFile(name,text){
+  try{if(window.claude&&claude.use){const d=await claude.use("downloads");if(d){await d.save({filename:name,data:new Blob([text],{type:"application/json"})});return true}}}catch(e){if(e&&e.code)return false}
+  try{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([text],{type:"application/json"}));a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);return true}catch(e){return false}
+}
+function exportEx(){
+  const list=Object.keys(EX).map(id=>{const q=BY[id];return q?{chapter:CH[q.ci].name,type:TN[q.t],no:q.n,question:q.q,options:q.t==="mc"?q.o:undefined,answer:ansText(q),source:q.src||undefined,explanation:EX[id].m.map(m=>(m.r==="a"?"[Claude] ":"[我的提問] ")+m.t).join("\n\n")}:null}).filter(Boolean);
+  return JSON.stringify({app:"採購法題庫",exported:new Date().toISOString(),count:list.length,items:list},null,1);
+}
+
 /* ---------- 備份／還原進度 ---------- */
 const b64=u8=>{let s="";for(let i=0;i<u8.length;i+=8192)s+=String.fromCharCode.apply(null,u8.subarray(i,i+8192));return btoa(s)};
 const unb64=t=>Uint8Array.from(atob(t),c=>c.charCodeAt(0));
@@ -747,6 +846,11 @@ function backupView(){
       <div class="row" id="outRow" hidden><button class="btn" id="cp">複製代碼</button><span class="msg" id="cpm"></span></div>
     </div>
     <div class="panel">
+      <div class="label">匯出我的詳解</div>
+      <p class="note" style="margin:0">目前存了 ${Object.keys(EX).filter(i=>BY[i]).length} 題詳解。匯出檔可以交給 Claude 對照法規原文校正，校正後內建進題庫。</p>
+      <div class="row"><button class="btn" id="exDl" ${Object.keys(EX).length?"":"disabled"}>下載詳解檔</button><button class="btn ghost" id="exCp" ${Object.keys(EX).length?"":"disabled"}>複製詳解內容</button><span class="msg" id="exm"></span></div>
+    </div>
+    <div class="panel">
       <div class="label">還原進度</div>
       <textarea id="inp" aria-label="貼上備份代碼" placeholder="貼上以 PQ 開頭的備份代碼" style="min-height:90px"></textarea>
       <div class="row"><button class="btn" id="rs">還原</button><span class="msg" id="rsm" role="status"></span></div>
@@ -756,6 +860,9 @@ function backupView(){
   document.getElementById("mk").onclick=async()=>{out.value=await makeCode();out.hidden=false;document.getElementById("outRow").hidden=false;out.select()};
   document.getElementById("cp").onclick=()=>{const m=document.getElementById("cpm");
     navigator.clipboard.writeText(out.value).then(()=>{m.className="msg ok";m.textContent="已複製"}).catch(()=>{out.select();m.className="msg note";m.textContent="請長按或按 Ctrl+C 複製已選取的代碼"})};
+  const exm=document.getElementById("exm");
+  document.getElementById("exDl").onclick=async()=>{const ok=await saveFile("採購法題庫-詳解.json",exportEx());exm.className=ok?"msg ok":"msg bad";exm.textContent=ok?"已下載":"無法下載，請改用「複製詳解內容」"};
+  document.getElementById("exCp").onclick=()=>{const t=exportEx();navigator.clipboard.writeText(t).then(()=>{exm.className="msg ok";exm.textContent="已複製"}).catch(()=>{out.value=t;out.hidden=false;out.select();exm.className="msg note";exm.textContent="已放到上方文字框，請手動複製"})};
   const rs=document.getElementById("rs"),rsm=document.getElementById("rsm");let parsed=null;
   rs.onclick=async()=>{
     try{

@@ -1,5 +1,5 @@
 /* 採購法題庫：離線快取。更新網站內容時，把 VERSION 改成新日期即可 */
-const VERSION = "2026-10-27-1";
+const VERSION = "2026-10-27-2";
 const CACHE = "pq-" + VERSION;
 const CORE = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 
